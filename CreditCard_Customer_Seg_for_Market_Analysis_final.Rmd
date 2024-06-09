@@ -1,0 +1,785 @@
+---
+title: "DA_project"
+author: "TeamCC"
+date: "2024-04-19"
+output:
+  html_document:
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(kableExtra)
+library(skimr)
+library(gridExtra)
+library(factoextra)
+library(hopkins)
+library(clValid)
+library(NbClust)
+library(mclust)
+library(cowplot)
+library(dbscan)
+library(fpc)
+library(corrplot)
+library(stats)
+library(fmsb)
+library(GGally)
+library(caret)   
+library(dplyr)
+library(ggrepel)
+
+```
+
+## 1. Dataset Loading and Exploration:
+
+```{r}
+#loading the dataset
+cc <- read.csv("C:\\Users\\mansi\\Downloads\\credit_card_dataset.csv",
+               header = T,
+               row.names = 1) 
+
+head(cc)
+summary(cc)
+names(cc)
+```
+
+```{r}
+# Create a tibble directly
+data <- tibble(
+  Variables = c("CUSTID", "BALANCE", "BALANCEFREQUENCY", "PURCHASES", "ONEOFFPURCHASES",
+                 "INSTALLMENTSPURCHASES", "CASHADVANCE", "PURCHASESFREQUENCY", "ONEOFFPURCHASESFREQUENCY",
+                 "PURCHASESINSTALLMENTSFREQUENCY", "CASHADVANCEFREQUENCY", "CASHADVANCETRX", "PURCHASESTRX",
+                 "CREDITLIMIT", "PAYMENTS", "MINIMUM_PAYMENTS", "PRCFULLPAYMENT", "TENURE"),
+  Description = c("Identification of Credit Card holder (Categorical)",
+                  "Balance amount left in their account to make purchases",
+                  "How frequently the Balance is updated, score between 0 and 1 (1 = frequently updated, 0 = not frequently updated)",
+                  "Amount of purchases made from account",
+                  "Maximum purchase amount done in one-go",
+                  "Amount of purchase done in installment",
+                  "Cash in advance given by the user",
+                  "How frequently the Purchases are being made, score between 0 and 1 (1 = frequently purchased, 0 = not frequently purchased)",
+                  "How frequently Purchases are happening in one-go (1 = frequently purchased, 0 = not frequently purchased)",
+                  "How frequently purchases in installments are being done (1 = frequently done, 0 = not frequently done)",
+                  "How frequently the cash in advance being paid",
+                  "Number of Transactions made with Cash in Advanced",
+                  "Number of purchase transactions made",
+                  "Limit of Credit Card for user",
+                  "Amount of Payment done by user",
+                  "Minimum amount of payments made by user",
+                  "Percent of full payment paid by user",
+                  "Tenure of credit card service for user")
+)
+
+data %>%
+  kbl() %>%
+  kable_material_dark()
+```
+
+- I discovered that the "PURCHASES" variable is just the total of "ONEOFF_PURCHASES" and "INSTALLMENTS_PURCHASES" added together. This might not be super important for our analysis right now, but we'll look more into it later when we pick which features are most important. So, I'm making a new temporary variable called "MY_PURCHASES" based on 10 rows. It's basically the same as "PURCHASES," but I'm adding "ONEOFF_PURCHASES" and "INSTALLMENTS_PURCHASES" together to prove my discovery.
+
+```{r}
+# Select top 10 rows with highest BALANCE
+top_10 <- cc %>% 
+  top_n(10, BALANCE) 
+
+# Verify the relationship between PURCHASES, ONEOFF_PURCHASES, and INSTALLMENTS_PURCHASES
+top_10 <- top_10 %>%
+  mutate(MY_PURCHASES = ONEOFF_PURCHASES + INSTALLMENTS_PURCHASES)
+
+# Display the selected columns and the newly created MY_PURCHASES variable
+top_10 %>% 
+  select(ONEOFF_PURCHASES, INSTALLMENTS_PURCHASES, PURCHASES, MY_PURCHASES) %>%
+  kbl() %>%
+  kable_material_dark()
+```
+
+```{r}
+# Missing Value Check
+colSums(is.na(cc)) %>% 
+  kbl(col.names = "Numbers of Missing Values") %>% 
+  kable_material_dark(full_width = F) 
+```
+
+```{r}
+summary(cc) %>% kbl() %>% kable_material_dark()
+```
+
+- Based on the summary after exploring the dataset, this is what we plan to do next:
+We have a dataset with 8950 rows of data. Even after removing the missing values, we'll still have about 96.5% of our data left. Normally, when we have missing values, there are different ways to deal with them. We can remove them, or replace them with the average or middle value of the other data. There are also more complex methods like using special algorithms to guess what the missing values might be, like KNN or bagging algorithms. We usually use these methods when there are a lot of missing values in important parts of the data. For example, if more than 5% but less than 60% of a variable's values are missing. But, since our missing data is below 5%, we choose to remove them for our project.
+
+
+## 2. Dataset Cleaning and Manipulation:
+
+```{r}
+# Display original variable names
+cc_original_names <- colnames(cc) %>%
+  as.data.frame() %>%
+  rename(Variables = '.') %>%
+  kbl() %>%
+  kable_material_dark()
+
+print(cc_original_names)
+
+# Transform variable names to reader-friendly form
+cc <- cc %>%
+  rename_all(str_to_title)
+
+# Display transformed variable names
+cc_transformed_names <- colnames(cc) %>%
+  as.data.frame() %>%
+  rename(Variables = '.') %>%
+  kbl() %>%
+  kable_material_dark()
+
+print(cc_transformed_names)
+```
+
+```{r}
+# Remove missing values
+cc <- na.omit(cc)
+
+# Display updated number of rows
+nrow_cc <- nrow(cc)
+
+print(nrow_cc)
+```
+
+As part of data cleaning and manipulation:
+
+- Original Variable Names Displayed: Initially, the original variable names, which were in all capital letters, were displayed to provide insight into the dataset structure.
+- Transformation of Variable Names: The variable names were transformed into a more reader-friendly form using the str_to_title function. This step aimed to enhance readability and comprehension of the dataset.
+- Missing Values Removal: Missing values were removed from the dataset using the na.omit() function. This ensured that only complete cases were retained for subsequent analysis.
+- Updated Dataset Size: After removing missing values, the number of rows in the dataset was updated to reflect the reduction in size. The updated dataset now contains a total of 8636 rows.
+ 
+## 3. Exploratory Data Analysis (EDA): 
+
+```{r}
+#A histogram is plotted to investigate the distribution of the data
+
+# Data frame transformation
+df_long <- cc %>%
+  pivot_longer(cols = 1:17, names_to = "my.variable", values_to = "my.value")
+
+# Histogram plot
+ggplot(df_long, aes(x = my.value, fill = my.variable)) +
+  geom_histogram(color = "black") +
+  facet_wrap(~my.variable, scale = "free") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(face = "bold", hjust = 0.5)) +
+  labs(title = "Variable Distribution Analysis",
+       subtitle = "by Histogram")
+```
+
+- Several columns in the dataset exhibit skewness and contain large values. Typically, one might apply a logarithmic transformation to such variables to normalize their distribution. However, since I intend to standardize these variables in a subsequent section, I will refrain from log-transforming them at this stage.
+
+```{r}
+# Compute the correlation matrix
+corr_cc <- cor(cc, method = "spearman")
+
+# Plot the correlation matrix
+corrplot(corr_cc, type = "lower", method = "number",
+         tl.cex = 0.6, tl.col = "darkgreen", number.cex = 0.6, pch = 20,
+         title = "Correlation between Variables",
+         addrect = 8, rect.col = "red", 
+         cl.pos = "b", cl.cex = 0.6,
+         mar = c(2, 2, 2, 2))
+```
+
+```{r}
+# Construct correlation table
+cor_cc_df <- round(cor(corr_cc), 2) %>%
+  as.data.frame() 
+
+# Display correlation table
+cor_cc_df %>%
+  kbl() %>%
+  kable_material_dark()
+
+# Find highly correlated variables
+correlated_vars <- caret::findCorrelation(x = corr_cc,
+                                          names = TRUE,  # Display variable names
+                                          cutoff = 0.80)
+
+# Display redundant variables
+correlated_vars_df <- correlated_vars %>%
+  as.data.frame() %>%
+  rename(`Redundant Variables` = '.')
+
+correlated_vars_df %>%
+  kbl(col.names = "Redundant Variables") %>%
+  kable_styling(full_width = FALSE)
+
+# Update the dataset by removing correlated variables
+cc <- cc %>%
+  select(-one_of(correlated_vars))
+
+# Display active variables
+active_vars_df <- colnames(cc) %>%
+  as.data.frame() %>%
+  rename(`Active Variables` = '.')
+
+active_vars_df %>%
+  kbl(col.names = "Active Variables") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+- We have successfully reduced the total number of variables in the dataset from 17 to just 10 by eliminating 7 highly correlated variables.
+ 
+- Thus, as part of the Exploratory Data Analysis (EDA) phase, we began by visualizing the distribution of our data using histograms, allowing us to gain insights into its spread and central tendencies. Following this, we conducted a Correlation Check to identify relationships between variables. Any correlated variables, indicating redundancy, were flagged for removal. We employed a threshold of 0.8 for correlation values, beyond which variables were considered highly correlated. As a result, the dataset's total variable count was reduced from 17 to 10, with seven highly correlated variables removed. This streamlined dataset will facilitate more focused and efficient analysis moving forward.
+ 
+## 4. Feature Selection and Dimensionality Reduction: 
+
+In this section, we are utilizing *Principal Component Analysis (PCA)* to explore data.
+
+ - Before diving into PCA, we standardize our data to make comparisons fair, ensuring all variables are on the same scale.
+ 
+```{r}
+# Scale the data
+cc.scale <- scale(cc)
+head(cc.scale) %>% kbl() %>% kable_material_dark()
+```
+
+```{r}
+# Perform PCA
+res.pca <- prcomp(cc.scale, retx = TRUE)
+```
+
+*Insights from the Scree Plot:*
+
+The Scree Plot tells us that the first two components of our PCA explain about 40.2% of the variance. These components will be our main focus.
+
+```{r}
+# Plot Scree Plot
+scree_var <- res.pca$sdev^2 / sum(res.pca$sdev^2)
+scree_plot <- plot(1:length(scree_var), scree_var, type = "b", 
+                   xlab = "Principal Component", ylab = "Proportion of Variance Explained",
+                   main = "Scree Plot", col = "orange", pch = 19)
+
+# Add text labels for each point
+text(1:length(scree_var), scree_var, labels = round(scree_var, 2), pos = 3)
+```
+
+```{r}
+# Plot Contribution of Variables on Axes 1 and 2
+pca1 <- fviz_contrib(res.pca, choice = "var", axes = 1, top = 10)
+print(pca1)
+
+pca2 <- fviz_contrib(res.pca, choice = "var", axes = 2, top = 10)
+print(pca2)
+
+# Plot Factor Map for Variables
+factor_map <- fviz_pca_var(res.pca, repel = TRUE,
+                            col.var = "contrib",
+                            gradient.cols = c("skyblue", "blue", "darkblue")) +
+  labs(title = "Factor Map: Variable - PCA") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+print(factor_map)
+```
+
+*Identification of Important Variables:*
+
+- We pinpoint key variables like purchases, cash advances, payments, and credit limits. These are crucial because they have a big impact on the data and are well-represented by our first two PCA components.
+
+*Correlation Trends Unveiled:*
+
+PCA highlights correlation trends among variables, illustrating groupings such as:
+
+- Positive correlation between "Purchases" and "Oneoff_purchases_frequency".
+- Positive correlation between "Credit_limit" and "Payments".
+- Positive correlation between "Cash_advance_trx" and "Minimum_payments".
+- Negative correlation between "Minimum_payments" and "Prc_full_payment".
+
+*Insights for Clustering - Way for Next Step:*
+
+These detected correlations pave the way for potential insights into clustering analysis. Notable questions and hypotheses arise, including:
+
+- Are there distinct groups of credit card holders based on their purchasing behavior?
+- Do certain groups prefer minimum payments over full balance payments?
+- Are there specific groups inclined towards frequent cash advances?
+
+
+## 4. Clustering Analysis:
+
+#### 4.1 Cluster-Tendency Assessment:
+
+- Clustering is a common technique in data analysis, but it can sometimes produce clusters even when they don't actually exist in the data. To address this, we perform a clustering tendency assessment using the Hopkins Statistics method. This statistical approach evaluates the spatial randomness of the data, with a null hypothesis suggesting uniform distribution and no meaningful clusters.
+
+- The Hopkins statistic ranges between 0 and 1, where lower values indicate regularly-spaced or indecisive data, values around zero signify randomness, and values near 0.7 to 1 suggest potential clustering. Our analysis yields a Hopkins statistic close to 1, rejecting the null hypothesis and indicating that the credit card dataset exhibits significant clustering tendencies. This finding is consistent across different implementations of the Hopkins statistic, reinforcing the conclusion that the dataset is clusterable.
+
+```{r}
+# Cluster-Tendency Assessment
+set.seed(123)
+hopkins_stat <- hopkins(cc.scale, m = nrow(cc.scale) - 1)
+if (hopkins_stat >= 0.7) {
+  cat("The Hopkins Statistics is close to 1, indicating significant clustering tendency.\n")
+} else {
+  cat("The Hopkins Statistics is not indicative of significant clustering tendency.\n")
+}
+```
+
+#### 4.2 CLARA (Clustering Large Applications):
+
+- Given the dataset's size, we opt for CLARA as the clustering algorithm, an extension of PAM designed for large datasets. CLARA employs a sampling approach to mitigate computational and memory constraints. We select CLARA over hierarchical clustering methods due to its scalability.
+
+- We conduct six CLARA algorithms for varying cluster numbers (K) to explore different partitionings of the data. Visualizing these partitions helps us understand how the clusters evolve with different K values.
+
+```{r}
+# CLARA
+res.clara <- list()
+plot_list <- list()
+
+for (k in 2:7) {
+  # Perform CLARA clustering
+  res.clara[[k]] <- eclust(cc.scale, FUNcluster = "clara", k = k, graph = FALSE)
+  
+  # Visualize CLARA Results
+  plot_title <- paste("Cluster plot (K =", k, ")")
+  plot_list[[k]] <- fviz_cluster(res.clara[[k]], show.clust.cent = FALSE, geom = "point", 
+                                 alpha = 0.5, palette = "Dark2") + 
+                     theme_classic() + labs(title = plot_title)
+}
+
+# Plot the results in a grid
+plot_grid(plotlist = plot_list, ncol = 2)
+```
+
+- The silhouette width of each observation in each K is also examined. A high silhouette width indicates well-clustered observations, while negative values suggest potential misclassifications. These visualizations aid in determining the optimal number of clusters.
+
+```{r}
+# Silhouette Width Visualization
+silhouette_plots <- lapply(res.clara, function(res) {
+  if (!is.null(res)) {
+    fviz_silhouette(res, palette = "Dark2")
+  }
+})
+plot_grid(plotlist = silhouette_plots, ncol = 2)
+```
+
+*The Elbow Method:*
+
+- The Elbow Method helps us find the best number of clusters (k) for our data. We calculate the total within-cluster variation, known as the Total Within Sum of Squares (WSS), for different values of k. As we increase k, the WSS generally decreases. However, the optimal k is where the reduction in WSS starts to slow down significantly, forming a bend or "elbow" on the graph.
+- In our analysis, the Total WSS graph suggests that the optimal k could be either 5 or 6.
+
+```{r}
+fviz_nbclust(cc.scale, FUNcluster = clara, method = "wss")
+```
+
+*Silhouette Method:*
+
+- The Silhouette Method also helps us determine the best k for clustering. It uses the average silhouette width, which represents how similar each point is to others in its cluster. A high average silhouette width indicates good clustering, as it means that points within clusters are similar to each other.
+- Based on our analysis, the Silhouette Method suggests that 4 is the optimal number of clusters because it has the highest average silhouette width.
+
+```{r}
+fviz_nbclust(cc.scale, FUNcluster = clara, method = "silhouette")
+```
+
+- So, let's take 5 as the optimal number of cluster for CLARA because it is the value suggested by two methods above.
+
+```{r}
+# Create parallel coordinate plot
+set.seed(123)
+
+# Set up dataframe
+clara_k6 <- cbind(as.data.frame(cc.scale), 
+                  cluster = res.clara[[5]]$clustering) %>%  # Merge scaled data with clusters
+  mutate(cluster = as.factor(cluster)) %>% 
+  relocate(cluster, .before = Balance_frequency)
+
+clara_k6_median <- clara_k6 %>% 
+                   as.data.frame() %>% 
+                   group_by(cluster) %>% 
+                   summarise_all(median)
+
+ggparcoord(clara_k6_median, 
+           columns = c(2:11),
+           groupColumn = "cluster",
+           scale = "globalminmax", 
+           showPoints = TRUE) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "top") +
+  labs(title = "Parallel Coordinate Plot",
+       subtitle = "Showing: Median of each Variable") +
+  geom_text_repel(aes(label = cluster), box.padding = 0.1)
+
+```
+
+Based on this analysis, we identify five distinct groups of credit card users based on their behavior and transaction patterns. These clusters provide valuable insights into customer segmentation and can inform targeted marketing strategies or product offerings. Additionally, parallel coordinate plots visualize the median values of variables within each cluster, facilitating deeper interpretation of the cluster characteristics.
+
+- Infrequent Users: Users in this group rarely use their credit cards. They may make occasional purchases but are less active compared to other users.
+- One-off Purchasers: These users prefer to make one-time purchases with their credit cards and tend to avoid installment purchases.
+- Installment Purchasers: Users in this group frequently use their credit cards for installment purchases.
+- Max Payers: Users in this group have a zero "Balance Frequency," indicating minimal activity with the credit card company. They prefer to pay their credit card bills in full, resulting in a high percentage of full payments.
+- Active Revolvers: These users are highly active with their credit cards, making large purchases and payments. They often engage in cash advances and repay large amounts, but they have a low percentage of full payments, indicating a reluctance to pay the full balance.
+ 
+#### 4.3 Hierarchical K-Means Clustering:
+
+*Overview:*
+- Combines K-means clustering with hierarchical clustering to enhance results.
+- Overcomes K-means' limitation of initial centroid randomness by using optimised centroids from hierarchical clustering.
+ 
+*Algorithms:*
+
+i) Hierarchical Clustering:
+
+- Computes hierarchical clustering with optimal K obtained from previous analysis (e.g., based on "WSS").
+- Groups similar observations into a hierarchical cluster tree based on distance matrix and chosen linkage function.
+- Cuts tree into pre-specified K clusters.
+
+
+ii) Compute Cluster Centers:
+
+- Calculates the center (mean) of each cluster.
+
+
+iii) K-means Clustering:
+
+- Performs K-means clustering on the original standardised credit card dataset using cluster centers from step 2.
+- Assigns observations to closest centroids based on distance matrix (e.g., Euclidean).
+Iteratively updates means and reallocates observations until minimising total within sum of squares (WSS).
+
+```{r}
+# Determine optimal number of clusters using silhouette method
+silhouette_plot <- fviz_nbclust(cc.scale, FUNcluster = kmeans, method = "silhouette")
+silhouette_plot
+```
+
+```{r}
+# Determine optimal number of clusters using elbow method
+elbow_plot <- fviz_nbclust(cc.scale, FUNcluster = kmeans, method = "wss")
+elbow_plot
+```
+
+- Both the above method suggests 2 as the optimal K for clustering, so let's proceed with k = 2.
+
+```{r}
+# Create hierarchical k-means clustering
+res.hk <- hkmeans(cc.scale, 
+                  k = 2,
+                  hc.metric = "manhattan",
+                  hc.method = "average",
+                  km.algorithm = "Hartigan-Wong")
+
+# Visualize hierarchical k-means clustering results
+hk_cluster_plot <- fviz_cluster(res.hk,
+                                palette = "Dark2",
+                                geom = "point",
+                                alpha = 0.5) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5)) +
+  labs(title = "Hierarchical K-means Clustering Results",
+       subtitle = "Hartigan-Wong algorithm + Euclidean + ward.D2 + K = 6")
+hk_cluster_plot
+```
+
+
+```{r}
+set.seed(123)
+
+# Prepare data
+hk_df <- cbind(as.data.frame(cc.scale),
+               cluster = res.hk$cluster) %>% 
+  mutate(cluster = as.factor(cluster)) %>% 
+  relocate(cluster, .before = Balance_frequency)
+
+# Compute median of each variable in each cluster
+hk_df_median <- hk_df %>% 
+  as.data.frame() %>% 
+  group_by(cluster) %>% 
+  summarise_all(median)
+
+# Visualize data using parallel coordinate plot
+ggparcoord(hk_df_median, 
+           column = c(2:11),
+           groupColumn = "cluster",
+           scale = "globalminmax", 
+           showPoints = TRUE) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "top") +
+  labs(title = "Parallel Coordinate Plot",
+       subtitle = "Showing: Median of each Variable") +
+  geom_text_repel(aes(label = cluster), box.padding = 0.1)
+```
+
+*Insights:*
+
+- Cluster 1 (Less-active users):
+Users infrequently utilize their credit cards.
+- Cluster 2 (Active users):
+Actively use credit cards for purchases, with one-off purchases being more common than installments.
+
+
+#### 4.4 Fuzzy Clustering:
+
+*Overview:*
+
+- Fuzzy clustering offers an alternative to k-means clustering, where observations are assigned probabilities of belonging to each cluster rather than being strictly assigned to one cluster.
+- This method allows for a more nuanced understanding of clustering by considering the likelihood of each observation belonging to multiple clusters, which is particularly useful in scenarios like marketing analysis.
+
+```{r}
+# Compute fuzzy algorithm
+res.fanny <- fanny(cc.scale, k = 2, metric = "euclidean", stand = FALSE, memb.exp = 1.05)
+```
+
+```{r}
+# Displaying the member coefficient
+head(res.fanny$membership, 10)
+```
+
+```{r}
+# Displaying the cluster that each observation belongs to (extracting the first 10 observations)
+head(res.fanny$clustering, 10)
+```
+
+```{r}
+# Visualising the clusters
+fviz_cluster(res.fanny, geom = "point", repel = TRUE, palette = "Dark2")
+```
+
+*Silhouette Width Explanation:*
+
+- Silhouette width (Si) is a metric used to assess the quality of clustering, ranging from 1 to -1.
+- A Si closer to 1 indicates well-clustered points, while a Si close to -1 suggests points that may benefit from being assigned to a different cluster.
+- Negative Si values indicate that a point may not be in the correct cluster.
+
+```{r}
+# Silhouette width analysis
+fviz_silhouette(res.fanny, palette = "Dark2")
+```
+
+*Silhouette Plot Analysis:*
+
+- The silhouette plot for the Fuzzy algorithm shows a significant amount of noise, with generally low silhouette levels across all 7 clusters.
+- Caution is advised when interpreting results from this plot due to the presence of noise and low silhouette levels, indicating potential clustering quality issues.
+
+```{r}
+# Parallel coordinate plot
+set.seed(123)
+
+fuz_df <- cbind(as.data.frame(cc.scale), cluster = res.fanny$clustering) %>%
+  mutate(cluster = as.factor(cluster)) %>%
+  relocate(cluster, .before = Balance_frequency)
+
+fuz_df_median <- fuz_df %>%
+  as.data.frame() %>%
+  group_by(cluster) %>%
+  summarise_all(median)
+
+ggparcoord(fuz_df_median, 
+           columns = c(2:11),
+           groupColumn = "cluster",
+           scale = "globalminmax",
+           showPoints = TRUE) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "top") +
+  labs(title = "Parallel Coordinate Plot",
+       subtitle = "Showing: Median of each Variable") +
+  geom_text_repel(aes(label = cluster), box.padding = 0.1)
+```
+
+*Comparison with Hierarchical K-means:*
+
+- Fuzzy clustering with 2 clusters shares similarities with Hierarchical K-means clustering, grouping users into less-active and active user categories.
+- Some differences emerge, such as a more pronounced preference for cash in advance in Cluster 1 and a higher popularity of installment purchases over one-off purchases in Cluster 2.
+- Despite these differences, both methods highlight the tendency of users in Cluster 2 to prefer full repayment over minimum payments.
+
+
+#### 4.5 Model-Based Clustering:
+
+*Overview:*
+
+- Model-based clustering employs the EM (Expectation-Maximization) algorithm, treating data as originating from a mixture of clusters with varying densities.
+- Hierarchical Model-based Clustering: The algorithm initiates with hierarchical clustering and segments the dendrogram into different k clusters. Each cluster is then centered at its mean, with increasing density around the mean.
+- The algorithm identifies the geometric features of each cluster, including volume, shape, and orientation. These features are crucial in defining the characteristics of each cluster.
+- Model Selection with BIC: The Bayesian Information Criterion (BIC) is utilized to determine the best model. A larger BIC value signifies a better model, leading to the selection of the model with the highest BIC.
+
+```{r}
+# Fit the model-based clustering
+res.mc <- Mclust(cc.scale)
+```
+
+- Optimal Model Selection: In this instance, the model-based clustering identifies the optimal model with 5 clusters, termed as VEV. VEV signifies clusters with varying volume, equal shape, and varying orientation on the coordinate axes.
+
+```{r}
+# Determine the best model using the Bayesian Information Criterion (BIC)
+# A large BIC indicates a good model, and the model with the highest BIC is selected
+summary(res.mc)
+```
+
+
+```{r}
+# Visualize the outcome of cluster-based modeling
+mc_plots <- list(
+  fviz_mclust(res.mc, what = "classification", geom = "point", alpha = 0.1),
+  fviz_mclust(res.mc, what = "BIC"),
+  fviz_mclust(res.mc, what = "uncertainty") + labs(subtitle = "Larger symbols indicate more uncertain observations.")
+)
+
+# Combine plots into a grid
+plot_grid(plotlist = mc_plots, nrow = 3)
+```
+
+
+```{r}
+set.seed(111)
+
+# Create dataframe with cluster information
+mc_df <- cbind(as.data.frame(cc.scale), cluster = res.mc$classification) %>%
+  mutate(cluster = as.factor(cluster)) %>%
+  relocate(cluster, .before = Balance_frequency)
+
+# Calculate median for each cluster
+mc_df_median <- mc_df %>%
+  as.data.frame() %>%
+  group_by(cluster) %>%
+  summarise_all(median)
+
+# Parallel coordinate plot
+ggparcoord(mc_df_median, 
+           columns = 2:11,
+           groupColumn = "cluster",
+           scale = "globalminmax", 
+           showPoints = TRUE) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "top") +
+  labs(title = "Parallel Coordinate Plot",
+       subtitle = "Showing: Median of each Variable") +
+  geom_text_repel(aes(label = cluster), box.padding = 0.1)
+```
+
+*The model-based clustering identified 5 clusters with below characterization:*
+
+Cluster 1:
+
+- Characterization: Less active users who prefer full payment.
+- Size: 3090 users.
+- Behavioral traits: This cluster comprises a large number of users who are less active in using their credit cards. They tend to make full payments for their purchases and have relatively low tenure.
+
+Cluster 2:
+
+- Characterization: Less active users who prefer cash-in-advance or credit card purchases.
+- Size: 1090 users.
+- Behavioral traits: Users in this cluster exhibit similar traits to Cluster 1 but may slightly prefer cash-in-advance transactions or credit card purchases over full payments.
+
+Cluster 3:
+
+- Characterization: Active card users who make large payments.
+- Size: 484 users.
+- Behavioral traits: This cluster represents active users who make significant payments for their purchases. They may engage in high-value transactions and have higher credit limits compared to other clusters. They may not prefer full payments consistently.
+
+Cluster 4:
+
+- Characterization: Revolvers who prefer minimum payments.
+- Size: 1313 users.
+- Behavioral traits: Users in this cluster are characterized by revolving credit behavior, where they tend to make minimum payments rather than paying off their balance in full. They may also engage in expensive purchases.
+
+Cluster 5:
+
+- Characterization: Less active users who slightly prefer installment purchases.
+- Size: 2659 users.
+- Behavioral traits: This cluster consists of users who are less active in credit card usage but may show a slight preference for installment purchases over other payment methods.
+
+
+#### 4.6 DBSCAN:
+
+*Overview:*
+
+- DBSCAN stands for Density-Based Spatial Clustering for Applications with Noise. It's a method used to identify outliers and cluster observations based on their density.
+- DBSCAN requires two main parameters: epsilon (eps) and minimum points (MinPts). MinPts should be chosen based on the size of the dataset, with a minimum value of 3. We'll experiment with different MinPts values to observe their impact on clustering.
+- Determining Epsilon (eps): Epsilon can be determined using the K-nearest neighbor (KNN) method. We'll compute the KNN distance plot for each MinPts value to find the optimal epsilon. The "knee" of the plot indicates the point where a sharp change occurs, helping us identify the optimal epsilon.
+- We'll try MinPts values ranging from 3 to 8 and compute the KNN distance plot for each. This will allow us to find the best epsilon value for each MinPts parameter.
+
+```{r}
+# Define the range of MinPts values
+min_pts_values <- 3:8
+
+# Initialize lists to store optimal eps values and DBSCAN results
+optimal_eps <- c(1.7, 1.8, 2, 2, 2.2, 2.2)
+dbscan_results <- list()
+
+# Set up the plotting layout
+par(mfrow = c(3, 2))
+```
+
+
+```{r}
+# Iterate through different values of MinPts
+for (i in seq_along(min_pts_values)) {
+  # Compute the kNN distance plot for the current MinPts value
+  kNN_plot <- dbscan::kNNdistplot(cc.scale, k = min_pts_values[i])
+  
+  # Add a horizontal line to indicate the optimal eps
+  abline(h = optimal_eps[i], lty = 2, col = "blue")
+  
+  # Add text to indicate the optimal eps
+  text(x = 2000, y = optimal_eps[i] + 0.1, labels = as.character(optimal_eps[i]), col = "blue")
+  
+  # Add a label
+  mtext(paste(optimal_eps[i], "is the optimal eps for", min_pts_values[i], "MinPts"), col = "blue")
+  
+  # Compute DBSCAN algorithm for the current MinPts and eps combination
+  dbscan_results[[i]] <- fpc::dbscan(cc.scale, eps = optimal_eps[i], MinPts = min_pts_values[i])
+}
+
+```
+
+
+```{r}
+# Reset the plotting layout
+par(mfrow = c(1, 1))
+
+# Plot each DBSCAN result individually
+for (i in seq_along(dbscan_results)) {
+  plot <- fviz_cluster(dbscan_results[[i]], data = cc.scale, stand = FALSE) +
+    labs(title = paste("MinPts =", min_pts_values[i], "with eps at", optimal_eps[i]))
+
+  print(plot)
+}
+```
+
+*Observations:*
+
+- Based on the results, it appears that the DBSCAN algorithm may not be suitable for this dataset. This could be because all data points are densely packed together, making it challenging for DBSCAN to identify distinct clusters with similar densities.
+
+
+## 4. Conclusion:
+
+*VEV Model from Model-Based Clustering*: 
+
+- Able to detect 5 clusters, the largest number compared to other methods.
+- Each cluster exhibits distinct characteristics based on credit card usage patterns.
+  
+*Cluster Analysis*:
+
+- Less Active Users Preferring Full Payment: Cluster 1.
+- Less Active Users Preferring Cash-in-Advance or Credit Card Purchases: Cluster 2.
+- Active Users Making Large Payments, Possibly Not Consistently Preferring Full Payments: Cluster 3.
+- Revolvers Preferring Minimum Payments, Potentially Engaging in Expensive Purchases: Cluster 4.
+- Less Active Users Preferring Installment Purchases: Cluster 5.
+  
+*Comparative Analysis*:
+
+- VEV Model: Identifies 5 clusters.
+- CLARA: Suggests 5 distinct user groups.
+- HKmeans and Fuzzy: Suggest 2 groups.
+  
+*Summary*:
+
+- For a more detailed segmentation, the VEV model is the most effective.
+- CLARA provides a good balance between granularity and simplicity with 5 groups.
+- HKmeans and Fuzzy clustering offer a simpler view with 2 groups.
+
+
+
